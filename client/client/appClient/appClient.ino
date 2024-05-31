@@ -1,4 +1,6 @@
+#include "HT_SSD1306Wire.h"
 #include "heltec.h"
+#include <DHT.h>
 
 ///definições do radio lora
 #define displayState false  //define se display estará ou nao ativo
@@ -7,68 +9,89 @@
 
 #define powerAmplifier true     //define se o amplificador de potencia PABBOOST estará ou nao ativo
 #define transmissionBand 433E6  //define a frequencia media de transmissão: 868E6, 915E6
+
 #define KEY 0xF3                // Chave para receber pacote
+#define DHTPIN 13               // Digital pin connected to the DHT sensor
+#define DHTTYPE DHT22
+#define PINRELE 17
 
-#define ssid "Darlan"          //difine a rede do wifi
-#define password "Dko115609@"  //define a senha de acesso
+static SSD1306Wire  display(0x3c, 500000, SDA_OLED, SCL_OLED, GEOMETRY_128_64, RST_OLED); // addr , freq , i2c group , resolution , rst
+DHT dht(DHTPIN, DHTTYPE);
 
-#define RelayPin 12 //// define pino 12 para uso do botão
-char st; // varivel de recebimento
+float currentTemp;
 
-///essas variavies ainda não estão sendo ultilizadas
-String rssi = "RSSI --"; // para teste
-String packSize = "--"; // variavel do tamanho do pacote
-String packet; /// pacote
-bool receiveflag = false; /// flag para recebimento
-// prototipo da função
-void onReceive(int packetSize);
+bool stateRele;
 
-// iniciação do codigo
+void getTemp();
+void sendPacket();
+
 void setup() {
-  pinMode(RelayPin,OUTPUT); //inicializa o LED
-  Heltec.begin(displayState, loRaState, serialState, powerAmplifier, transmissionBand); /// inicia component esp32 lora 
-  Serial.begin(115200); // defini canal do serial
-  LoRa.setSyncWord(KEY); /// para recebimento do pocate lora 
-  LoRa.receive(); /// escura o recebimento de pacote
-  delay(1000);  
- 
+
+  pinMode(PINRELE, OUTPUT);
+
+  Serial.begin(115200);
+  Heltec.begin(displayState, loRaState, serialState, powerAmplifier, transmissionBand);
+  dht.begin();
+  startOLED();
+  currentTemp = dht.readTemperature();
+  delay(1000);
 }
 
 void loop() {
-  int packetSize = LoRa.parsePacket(); /// pacote recebido
-  if (packetSize) { //// verfica se recebeu algo 
-    Serial.println("Pacote recebido");
-    /* Recebe os dados conforme protocolo */   
-    while (LoRa.available()) {  
-      st = (char)LoRa.read();
-    }
-     Serial.println(st);
-    if (st == '1')
-    digitalWrite(RelayPin, HIGH);  /// liga o led
-    delay(1000);
-    digitalWrite(RelayPin, LOW); // desloga led
-   /* Escreve RSSI de recepção e informação recebida */
-    Serial.print("'com RSSI");
-    Serial.println(LoRa.packetRssi());
-  }
+  getTemp();
+  Serial.print("Temperatura: ");
+  Serial.print(currentTemp);
+  Serial.println("°C");
+
+  display.clear();
+  display.setTextAlignment(TEXT_ALIGN_LEFT);
+  display.setFont(ArialMT_Plain_16);
+  display.drawString(30, 5, "Temperatura");
+  display.drawString(33, 30, (String)currentTemp);
+  display.drawString(78, 30, "°C");
+  display.display();
+  
+  delay(1000);
+
 }
 
+void startOLED(){
 
-/// ainda ira se trabalhado , mas na teoria tambem se usa para receber 
-void onReceive(int packetSize)//LoRa receiver interrupt service
-{
-    //if (packetSize == 0) return;
+  if(!display.init()) { 
+    Serial.println(F("SSD1306 allocation failed"));
+    for(;;); // Don't proceed, loop forever
+  }
+  display.setFont(ArialMT_Plain_10);
+  display.clear();
+  display.drawString(33, 5, "Iniciado");
+  display.drawString(10, 30, "com Sucesso!");
+  display.display();
+  delay(5000);
 
-    Serial.println("esta recebendo os dados");
-    packet = "";
-    packSize = String(packetSize,DEC);
 
-    while (LoRa.available())
-    {
-        packet += (char) LoRa.read();
-    }
+}
 
-    Serial.println(packet);
-    rssi = "RSSI: " + String(LoRa.packetRssi(), DEC);
-    receiveflag = true;
+void sendPacket() {
+  LoRa.beginPacket();
+  LoRa.print(currentTemp);
+  LoRa.endPacket();
+}
+
+void getTemp() {
+  float temperature = dht.readTemperature();
+  
+  if (isnan(temperature)) {
+    Serial.println("Falha na leitura do sensor DHT!");
+    return;
+  }
+  currentTemp = temperature;
+  ///Verifica se a temperatura está entre 2°C e 8°C
+  if (temperature >= 20 && temperature <= 30) {
+    digitalWrite(PINRELE, LOW);  // Liga o relé 1
+    Serial.println("Relé 1 ligado");
+  } else {
+    digitalWrite(PINRELE, HIGH);   // Desliga o relé 1
+    Serial.println("Relé 1 desligado");
+  }
+  delay(3000);
 }

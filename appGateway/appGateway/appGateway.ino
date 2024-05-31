@@ -6,27 +6,27 @@
 #include <SPI.h>
 #include <ESPAsyncWebServer.h>
 
+
 ///definições do radio lora
 #define displayState false  //define se display estará ou nao ativo
 #define loRaState true      //define se o rádio estará ou nao ativo
 #define serialState true    //define se o rádio estará ou nao ativo
 
 #define powerAmplifier true     //define se o amplificador de potencia PABBOOST estará ou nao ativo
-#define transmissionBand 433E6  //define a frequencia media de transmissão: 868E6, 915E6
+#define transmissionBand 915E6  //define a frequencia media de transmissão: 868E6, 915E6
 #define KEY 0xF3                // Chave para receber pacote
 
-#define ssid "Darlan"          //difine a rede do wifi
+#define ssid "Darlan"  //difine a rede do wifi
 #define password "Dko115609@"  //define a senha de acesso
 
-#define RelayPin 12 //// define pino 12 para uso do botão
+#define RelayPin 12  //// define pino 12 para uso do botão
 //iniciar servidor na porta 98
 AsyncWebServer server(80);
 
 
-
-unsigned int counter = 0;  // Contador de pacotes
-float temp = 0;            // Temperatura
-float umid = 0;            // Umidade
+String packSize = "--";
+String packet ;
+float currentTemp;
 
 /* Variaveis globais */
 long informacao_a_ser_enviada = 0;
@@ -37,61 +37,60 @@ int val = 0;      // variável para guardar o valor lido
 // HTML web page
 const char index_html[] PROGMEM = R"rawliteral(
 <!DOCTYPE HTML><html>
-  <head>
-    <title>ESP Pushbutton Web Server</title>
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <style>
-      body { font-family: Arial; text-align: center; margin:0px auto; padding-top: 30px;}
-      .button {
-        padding: 10px 20px;
-        font-size: 24px;
-        text-align: center;
-        outline: none;
-        color: #fff;
-        background-color: #2f4468;
-        border: none;
-        border-radius: 5px;
-        box-shadow: 0 6px #999;
-        cursor: pointer;
-        -webkit-touch-callout: none;
-        -webkit-user-select: none;
-        -khtml-user-select: none;
-        -moz-user-select: none;
-        -ms-user-select: none;
-        user-select: none;
-        -webkit-tap-highlight-color: rgba(0,0,0,0);
-      }  
-      .button:hover {background-color: #1f2e45}
-      .button:active {
-        background-color: #1f2e45;
-        box-shadow: 0 4px #666;
-        transform: translateY(2px);
-      }
-    </style>
-  </head>
-  <body>
-    <h1>ESP Pushbutton Web Server</h1>
-    <button class="button" onmousedown="toggleCheckbox('on');" ontouchstart="toggleCheckbox('on');" onmouseup="toggleCheckbox('off');" ontouchend="toggleCheckbox('off');">LED PUSHBUTTON</button>
-   <script>
-   function toggleCheckbox(x) {
-     var xhr = new XMLHttpRequest();
-     xhr.open("GET", "/" + x, true);
-     xhr.send();
-   }
-  </script>
-  </body>
+<head>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="stylesheet" href="https://use.fontawesome.com/releases/v5.7.2/css/all.css" integrity="sha384-fnmOCqbTlWIlj8LyTjo7mOUStjsKC4pOpQbqyi7RrhN7udi9RwhKkMHpvLbHG9Sr" crossorigin="anonymous">
+  <style>
+    html {
+     font-family: Arial;
+     display: inline-block;
+     margin: 0px auto;
+     text-align: center;
+    }
+    h2 { font-size: 3.0rem; }
+    p { font-size: 3.0rem; }
+    .units { font-size: 1.2rem; }
+    .dht-labels{
+      font-size: 1.5rem;
+      vertical-align:middle;
+      padding-bottom: 15px;
+    }
+  </style>
+</head>
+<body>
+  <h2>ESP32 DHT Server</h2>
+  <p>
+    <i class="fas fa-thermometer-half" style="color:#059e8a;"></i> 
+    <span class="dht-labels">Temperature</span> 
+    <span id="temperature">%TEMPERATURE%</span>
+    <sup class="units">&deg;C</sup>
+  </p>
+</body>
+<script>
+setInterval(function ( ) {
+  var xhttp = new XMLHttpRequest();
+  xhttp.onreadystatechange = function() {
+    if (this.readyState == 4 && this.status == 200) {
+      document.getElementById("temperature").innerHTML = this.responseText;
+    }
+  };
+  xhttp.open("GET", "/temperature", true);
+  xhttp.send();
+}, 10000 ) ;
+
+</script>
 </html>)rawliteral";
 
+
 // Replaces placeholder with button section in your web page
-String processor(const String &var) {
+String processor(const String& var){
   //Serial.println(var);
-  if (var == "BUTTONPLACEHOLDER") {
-    String buttons = "";
-    buttons += "<h4>Output - GPIO 2</h4><label class=\"switch\"><input type=\"checkbox\" onchange=\"toggleCheckbox(this)\" id=\"2\" " + outputState(2) + "><span class=\"slider\"></span></label>";
-    return buttons;
+  if(var == "TEMPERATURE"){
+    return packet;
   }
   return String();
 }
+
 
 String outputState(int output) {
   if (digitalRead(output)) {
@@ -101,6 +100,8 @@ String outputState(int output) {
   }
 }
 
+void cbk(int packetSize);
+
 void notFound(AsyncWebServerRequest *request) {
   request->send(404, "text/plain", "Not found");
 }
@@ -109,10 +110,8 @@ void sendPacket(int currentTemp);
 void onReceive(int packetSize);
 
 void setupWifi() {
-  WiFi.disconnect(true);
-
   delay(100);
-
+  WiFi.disconnect();
   // IPAddress ip(192, 168, 31, 115);
   // IPAddress gateway(192, 168, 31, 1);
   // IPAddress subnet(255, 255, 0, 0);
@@ -137,7 +136,7 @@ void setupWifi() {
     delay(500);
     Serial.println("Connectando Wifi...");
   }
-
+               
   if (WiFi.status() == WL_CONNECTED) {
 
     Serial.println("Conectado...");
@@ -159,50 +158,53 @@ void handlePageclient() {
 
 
   server.on("/", HTTP_GET, [](AsyncWebServerRequest *request) {
-    request->send_P(200, "text/html", index_html);
+    request->send_P(200, "text/html", index_html, processor);
   });
-
-  // Receive an HTTP GET request
-  server.on("/on", HTTP_GET, [](AsyncWebServerRequest *request) {
-    Serial.println(1);
-    sendPacket(1);
-    request->send(200, "text/plain", "ok");
-  });
-
-  // Receive an HTTP GET request
-  server.on("/off", HTTP_GET, [](AsyncWebServerRequest *request) {
-    Serial.println(0);
-    sendPacket(0);
-    request->send(200, "text/plain", "ok");
+  server.on("/temperature", HTTP_GET, [](AsyncWebServerRequest *request){
+    request->send_P(200, "text/plain", packet.c_str());
   });
   server.onNotFound(notFound);
   server.begin();
 }
 
 void setup() {
-  pinMode(LED, OUTPUT);  //inicializa o LED
   Heltec.begin(displayState, loRaState, serialState, powerAmplifier, transmissionBand);
   Serial.begin(115200);
-  pinMode(RelayPin, OUTPUT);
-  LoRa.setSyncWord(KEY);
   setupWifi();
+  
+  LoRa.receive();
+  Serial.print(packet);  //Imprime no monitor serial a temperatura
   delay(1000);
+  handlePageclient();
+
 }
 
 
 void loop() {
-  handlePageclient();
-  int botaoPressionado = digitalRead(RelayPin);  // Lê o estado do botão
-  sendPacket(botaoPressionado);
-  counter++;
-  digitalWrite(LED, HIGH);
-  delay(400);
-  digitalWrite(LED, LOW);
-  delay(400);
+
+  int packetSize = LoRa.parsePacket();
+  if (packetSize) {
+    cbk(packetSize);
+    digitalWrite(LED, HIGH);  // Liga o LED
+    delay(500);               // Espera 500 milissegundos
+    digitalWrite(LED, LOW);   // Desliiga o LED
+    delay(500);               // Espera 500 milissegundos
+    Serial.print("Recebendo a temperatura: ");
+    Serial.print(packet);  //Imprime no monitor serial a temperatura
+    Serial.println("°C");
+  }
+  delay(10);
 }
 
 void sendPacket(int currentTemp) {
   LoRa.beginPacket();
   LoRa.print(currentTemp);
   LoRa.endPacket();
+}
+void cbk(int packetSize) {
+  packet = "";
+  packSize = String(packetSize);
+   for (int i = 0; i < packetSize; i++) {
+    packet += (char) LoRa.read(); //Atribui um caractere por vez a váriavel packet 
+  }
 }
